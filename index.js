@@ -14,14 +14,19 @@ const pkFile = "pk.txt";
 const recipientsFile = "recipients.txt";
 const transactionsCountFile = "transactions_count.json";
 
-// Utility
+// Utility functions
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function getRandomAmount() {
   const rand = Math.random() * (MAX_AMOUNT - MIN_AMOUNT) + MIN_AMOUNT;
-  return parseFloat(rand.toFixed(6)); // 6 desimal presisi
+  return parseFloat(rand.toFixed(6)); // 6 decimal places
+}
+
+function getRandomDelay() {
+  // Random delay between 3-10 seconds
+  return Math.floor(Math.random() * (10000 - 3000 + 1)) + 3000;
 }
 
 function readFileLines(filePath) {
@@ -31,34 +36,33 @@ function readFileLines(filePath) {
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
   } catch (err) {
-    console.error(`[❌] Gagal baca file ${filePath}`);
+    console.error(`[❌] Failed to read file ${filePath}`);
     return [];
   }
 }
 
-// Mengambil atau mengupdate jumlah transaksi
+// Get or update transaction count for each wallet
 function getTransactionCount(walletAddress) {
   let countData = {};
   try {
     countData = JSON.parse(fs.readFileSync(transactionsCountFile, "utf-8"));
   } catch (err) {
-    console.warn("[⚠️] Tidak dapat membaca count transaksi sebelumnya.");
+    console.warn("[⚠️] Unable to read previous transaction counts.");
   }
 
-  // Reset jika sudah hari baru
   const today = new Date().toISOString().split('T')[0]; // format yyyy-mm-dd
   const lastDate = countData.date || "";
   const todayDate = new Date().toISOString().split('T')[0];
 
   if (lastDate !== todayDate) {
-    countData = { date: todayDate }; // reset count
+    countData = { date: todayDate }; // reset count for new day
   }
 
   if (!countData[walletAddress]) {
     countData[walletAddress] = 0;
   }
 
-  // Update file
+  // Save the count data
   fs.writeFileSync(transactionsCountFile, JSON.stringify(countData, null, 2));
   return countData[walletAddress];
 }
@@ -69,21 +73,22 @@ function updateTransactionCount(walletAddress, count) {
   fs.writeFileSync(transactionsCountFile, JSON.stringify(countData, null, 2));
 }
 
+// Function to send native token (TEA) to recipients
 async function sendNativeToken(senderPK, recipients, provider) {
   const wallet = new ethers.Wallet(senderPK, provider);
 
-  console.log(`\n[👛] Menggunakan wallet: ${wallet.address}`);
+  console.log(`\n[👛] Using wallet: ${wallet.address}`);
 
-  // Cek dan update count transaksi
+  // Check and update transaction count
   const currentCount = getTransactionCount(wallet.address);
   if (currentCount >= MAX_SEND_PER_DAY) {
-    console.log(`[❌] Wallet ${wallet.address} sudah mencapai limit transaksi hari ini (${MAX_SEND_PER_DAY} transaksi).`);
-    return; // Jika sudah mencapai limit, hentikan pengiriman
+    console.log(`[❌] Wallet ${wallet.address} has reached the transaction limit for today (${MAX_SEND_PER_DAY} transactions).`);
+    return; // Stop sending if transaction limit is reached
   }
 
   for (const recipient of recipients) {
     if (!ethers.isAddress(recipient)) {
-      console.warn(`[⚠️] Alamat tidak valid, dilewati: ${recipient}`);
+      console.warn(`[⚠️] Invalid address, skipping: ${recipient}`);
       continue;
     }
 
@@ -96,25 +101,25 @@ async function sendNativeToken(senderPK, recipients, provider) {
         value: amountInWei,
       });
 
-      console.log(
-        `[✅] Kirim ${amount} TEA ke ${recipient} | TX: ${BLOCK_EXPLORER_URL}${tx.hash}`
-      );
+      console.log(`[✅] Sent ${amount} TEA to ${recipient} | TX: ${BLOCK_EXPLORER_URL}${tx.hash}`);
 
-      // Update transaksi count
+      // Update transaction count
       const updatedCount = currentCount + 1;
       updateTransactionCount(wallet.address, updatedCount);
 
     } catch (err) {
-      console.error(`[❌] Gagal kirim ke ${recipient}: ${err.message}`);
+      console.error(`[❌] Failed to send to ${recipient}: ${err.message}`);
     }
 
-    await delay(DELAY_MS);
+    // Apply random delay between transactions
+    const randomDelay = getRandomDelay();
+    await delay(randomDelay); // Delay between 3s to 10s
 
-    // Cek ulang jika transaksi sudah mencapai limit setelah delay
+    // Check if transaction limit is reached after delay
     const updatedCount = getTransactionCount(wallet.address);
     if (updatedCount >= MAX_SEND_PER_DAY) {
-      console.log(`[❌] Wallet ${wallet.address} sudah mencapai limit transaksi hari ini.`);
-      break; // Hentikan kirim jika limit tercapai
+      console.log(`[❌] Wallet ${wallet.address} has reached the transaction limit for today.`);
+      break;
     }
   }
 }
@@ -124,17 +129,21 @@ async function main() {
   const recipients = readFileLines(recipientsFile);
 
   if (privateKeys.length === 0 || recipients.length === 0) {
-    console.error("[❌] File pk.txt atau recipients.txt kosong.");
+    console.error("[❌] pk.txt or recipients.txt is empty.");
     return;
   }
 
   const provider = new ethers.JsonRpcProvider(RPC_URL, CHAIN_ID);
 
-  for (const pk of privateKeys) {
+  // Process each wallet in parallel
+  const walletPromises = privateKeys.map(async (pk) => {
     await sendNativeToken(pk, recipients, provider);
-  }
+  });
 
-  console.log("\n[🏁] Semua transaksi selesai.");
+  // Wait for all transactions to be completed
+  await Promise.all(walletPromises);
+
+  console.log("\n[🏁] All transactions completed.");
 }
 
 main();
